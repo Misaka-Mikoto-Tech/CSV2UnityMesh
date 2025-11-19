@@ -8,12 +8,15 @@ using System;
 
 namespace UnityEditor.CSV2UnityMesh
 {
+
     public class CSV2UnityMesh : EditorWindow
     {
         private SerializedObject serializedObject;
         private SerializedProperty csvAssetProp;
         private SerializedProperty materialDebugModeProp;
+        private SerializedProperty subMeshConfigsProp;
 
+        public static int rowCount;
         public static int positionColumnID = 3;
         public static int normalColumnID = 6;
         public static int tangentColumnID = 9;
@@ -29,7 +32,17 @@ namespace UnityEditor.CSV2UnityMesh
 
         public TextAsset m_csvAsset = null;
 
-        
+        [Serializable]
+        public class SubMeshConfig
+        {
+            public int startIndex = 0;
+            public int count = 0;
+        }
+
+        [SerializeField]
+        private List<SubMeshConfig> subMeshConfigs = new List<SubMeshConfig>();
+        public static bool enableSubMeshConfig = false;
+
         public static ExportFormat fbxExportFormat = ExportFormat.ASCII;
         public static string[] fbxFormatDisplayedString =
         {
@@ -88,6 +101,7 @@ namespace UnityEditor.CSV2UnityMesh
             serializedObject = new SerializedObject(this);
             csvAssetProp = serializedObject.FindProperty("m_csvAsset");
             materialDebugModeProp = serializedObject.FindProperty("m_materialDebugMode");
+            subMeshConfigsProp = serializedObject.FindProperty("subMeshConfigs");
 
             debugMaterial = (Material)AssetDatabase.LoadAssetAtPath(AssetDatabase.GUIDToAssetPath(debugMaterialGUID), typeof(Material));
 
@@ -97,6 +111,7 @@ namespace UnityEditor.CSV2UnityMesh
             previewRenderUtility.camera.transform.LookAt(Vector3.zero);
             previewRenderUtility.camera.farClipPlane = 1000.0f;
             previewRenderUtility.camera.nearClipPlane = 0.03f;
+
         }
 
         private void OnGUI()
@@ -159,6 +174,7 @@ namespace UnityEditor.CSV2UnityMesh
                 EditorGUILayout.EndHorizontal();
             }
 
+            DrawSubMeshConfigs();
 
             EditorGUIUtility.labelWidth = tempLabelWidth;
             EditorGUILayout.EndVertical();
@@ -272,7 +288,7 @@ namespace UnityEditor.CSV2UnityMesh
             GUILayout.Space(10);
             if (GUILayout.Button("Generate Mesh", GUILayout.Height(30)))
             {
-                Mesh genMesh = CreateMeshFromCSVAsset(m_columnHeadsArray, m_csvAsset);
+                Mesh genMesh = CreateMeshFromCSVAsset(m_columnHeadsArray, m_csvAsset, subMeshes: subMeshConfigs);
                 if (genMesh != null)
                 {
                     CreateMeshAssetAndShow(genMesh, m_outFilePath, m_outFileName);
@@ -288,6 +304,29 @@ namespace UnityEditor.CSV2UnityMesh
 
             GUILayout.Space(30);
             serializedObject.ApplyModifiedProperties();
+        }
+
+        private void DrawSubMeshConfigs()
+        {
+            EditorGUILayout.BeginHorizontal();
+            EditorGUI.BeginDisabledGroup(!enableSubMeshConfig);
+            EditorGUILayout.LabelField(Styles.subMeshStr + " " + rowCount, GUILayout.Width(250));
+            EditorGUI.EndDisabledGroup();
+
+            EditorGUI.BeginChangeCheck();
+            GUILayout.FlexibleSpace(); enableSubMeshConfig = EditorGUILayout.Toggle(Styles.enableSubMesh, enableSubMeshConfig, GUILayout.Width(150));
+            if (EditorGUI.EndChangeCheck())
+            {
+                if (!enableSubMeshConfig)
+                    subMeshConfigs.Clear();
+            }
+
+            EditorGUILayout.EndHorizontal();
+
+            if (enableSubMeshConfig)
+            {
+                EditorGUILayout.PropertyField(subMeshConfigsProp);
+            }
         }
 
         private GUIStyle GetButtonStyle(bool active)
@@ -314,6 +353,10 @@ namespace UnityEditor.CSV2UnityMesh
                 var dataHeads = ReadCSVColumnHeads(csvAsset);
                 columnHeadsArray = dataHeads.ToArray();
                 fileName = csvAsset.name + ".fbx";
+
+                // Read row count (except head)
+                var allLines = csvAsset.text.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
+                rowCount = Math.Max(0, allLines.Length - 1);
             }
             else
             {
@@ -348,7 +391,7 @@ namespace UnityEditor.CSV2UnityMesh
             return heads.Select(key => key.Contains(".") ? key.Split('.')[0] : key).ToList();
         }
 
-        public static Mesh CreateMeshFromCSVAsset(string[] csvColumnHeads, TextAsset csvAsset, bool rotation90 = false, bool flipUV = false, bool flipNormals = false)
+        public static Mesh CreateMeshFromCSVAsset(string[] csvColumnHeads, TextAsset csvAsset, bool rotation90 = false, bool flipUV = false, bool flipNormals = false, List<SubMeshConfig> subMeshes = null)
         {
             var assetPath = AssetDatabase.GetAssetPath(csvAsset);
             if (!System.IO.File.Exists(assetPath))
@@ -501,7 +544,31 @@ namespace UnityEditor.CSV2UnityMesh
 
             Mesh mesh = new Mesh();
             mesh.vertices = vertices;
-            mesh.SetTriangles(outputIndexBuff, 0);
+            
+            // SubMesh fill
+            if (subMeshes == null || subMeshes.Count == 0)
+            {
+                mesh.SetTriangles(outputIndexBuff, 0);
+            }
+            else
+            {
+                mesh.subMeshCount = subMeshes.Count;
+                for (int sm = 0; sm < subMeshes.Count; sm++)
+                {
+                    var startIndex = subMeshes[sm].startIndex;
+                    var count = subMeshes[sm].count;
+
+                    if (startIndex + count > outputIndexBuff.Length)
+                    {
+                        Debug.LogError($"SubMesh {sm} exceeds index buffer length!");
+                        continue;
+                    }
+
+                    int[] submeshIndices = new int[count];
+                    Array.Copy(outputIndexBuff, startIndex, submeshIndices, 0, count);
+                    mesh.SetTriangles(submeshIndices, sm);
+                }
+            }
 
             for (int ti = 0; ti < texcoordColumnID.Length; ti++)
             {
@@ -630,6 +697,7 @@ namespace UnityEditor.CSV2UnityMesh
             public static readonly GUIContent flipNormal = EditorGUIUtility.TrTextContent("flipNormal");
             public static readonly GUIContent flipUV = EditorGUIUtility.TrTextContent("flipUV");
             public static readonly GUIContent enableTexcoord = EditorGUIUtility.TrTextContent("Enable");
+            public static readonly GUIContent enableSubMesh = EditorGUIUtility.TrTextContent("Enable");
 
 
             public static readonly GUIContent meshProperties = EditorGUIUtility.TrTextContent("Mesh Properties");
@@ -641,6 +709,7 @@ namespace UnityEditor.CSV2UnityMesh
             public static string tangentStr = "Tangent:";
             public static string colorStr = "Color:";
             public static string texcoordStr = "Texcoord";
+            public static string subMeshStr = "SubMesh:";
 
             public static string fbxFormatStr = "FBX format:";
             public static string materialDebugMode = "MaterialDebugMode:";
@@ -655,12 +724,12 @@ namespace UnityEditor.CSV2UnityMesh
                 switch (e.type)
                 {
                     case EventType.MouseDown:
-                        if (e.button == 0) // ×ó¼üÍÏ¶¯Ðý×ª
+                        if (e.button == 0) // å·¦é”®æ‹–åŠ¨æ—‹è½¬
                         {
                             dragStartPos = e.mousePosition;
                             e.Use();
                         }
-                        else if (e.button == 2) // ÖÐ¼üÍÏ¶¯ÎïÌåÎ»ÖÃ
+                        else if (e.button == 2) // ä¸­é”®æ‹–åŠ¨ç‰©ä½“ä½ç½®
                         {
                             dragStartPos = e.mousePosition;
                             e.Use();
@@ -668,14 +737,14 @@ namespace UnityEditor.CSV2UnityMesh
                         break;
 
                     case EventType.MouseDrag:
-                        if (e.button == 0) // ×ó¼üÍÏ¶¯Ðý×ª
+                        if (e.button == 0) // å·¦é”®æ‹–åŠ¨æ—‹è½¬
                         {
                             Vector2 delta = e.mousePosition - dragStartPos;
-                            previewDir += delta * 0.5f; // µ÷ÕûÐý×ªËÙ¶È
+                            previewDir += delta * 0.5f; // è°ƒæ•´æ—‹è½¬é€Ÿåº¦
                             dragStartPos = e.mousePosition;
                             e.Use();
                         }
-                        else if (e.button == 2) // ÖÐ¼üÍÏ¶¯ÎïÌåÎ»ÖÃ
+                        else if (e.button == 2) // ä¸­é”®æ‹–åŠ¨ç‰©ä½“ä½ç½®
                         {
                             Vector2 delta = e.mousePosition - dragStartPos;
                             objectPosition += new Vector3(delta.x * 0.01f, -delta.y * 0.01f, 0);
@@ -684,7 +753,7 @@ namespace UnityEditor.CSV2UnityMesh
                         }
                         break;
 
-                    case EventType.ScrollWheel: // ¹öÂÖËõ·Å
+                    case EventType.ScrollWheel: // æ»šè½®ç¼©æ”¾
                         zoom += e.delta.y * 0.1f;
                         zoom = Mathf.Clamp(zoom, 1f, 10f);
                         e.Use();
