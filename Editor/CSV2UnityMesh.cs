@@ -8,15 +8,12 @@ using System;
 
 namespace UnityEditor.CSV2UnityMesh
 {
-
     public class CSV2UnityMesh : EditorWindow
     {
         private SerializedObject serializedObject;
         private SerializedProperty csvAssetProp;
         private SerializedProperty materialDebugModeProp;
-        private SerializedProperty subMeshConfigsProp;
 
-        public static int rowCount;
         public static int positionColumnID = 3;
         public static int normalColumnID = 6;
         public static int tangentColumnID = 9;
@@ -27,22 +24,13 @@ namespace UnityEditor.CSV2UnityMesh
         public static bool flipNormals = false;
         public static bool flipUV = false;
         public static bool[] enableTexcoord = new bool[] {true, false, false, false, false};
+        public static string[] propertyOps = new string[] { "", "", "", "", "", "", "", "", "" };
 
         private string[] m_columnHeadsArray = null;
 
         public TextAsset m_csvAsset = null;
 
-        [Serializable]
-        public class SubMeshConfig
-        {
-            public int startIndex = 0;
-            public int count = 0;
-        }
-
-        [SerializeField]
-        private List<SubMeshConfig> subMeshConfigs = new List<SubMeshConfig>();
-        public static bool enableSubMeshConfig = false;
-
+        public enum ExportFormat { ASCII = 0, Binary = 1}
         public static ExportFormat fbxExportFormat = ExportFormat.ASCII;
         public static string[] fbxFormatDisplayedString =
         {
@@ -101,7 +89,6 @@ namespace UnityEditor.CSV2UnityMesh
             serializedObject = new SerializedObject(this);
             csvAssetProp = serializedObject.FindProperty("m_csvAsset");
             materialDebugModeProp = serializedObject.FindProperty("m_materialDebugMode");
-            subMeshConfigsProp = serializedObject.FindProperty("subMeshConfigs");
 
             debugMaterial = (Material)AssetDatabase.LoadAssetAtPath(AssetDatabase.GUIDToAssetPath(debugMaterialGUID), typeof(Material));
 
@@ -111,7 +98,6 @@ namespace UnityEditor.CSV2UnityMesh
             previewRenderUtility.camera.transform.LookAt(Vector3.zero);
             previewRenderUtility.camera.farClipPlane = 1000.0f;
             previewRenderUtility.camera.nearClipPlane = 0.03f;
-
         }
 
         private void OnGUI()
@@ -143,16 +129,27 @@ namespace UnityEditor.CSV2UnityMesh
 
             EditorGUILayout.BeginHorizontal();
             positionColumnID    = EditorGUILayout.Popup(Styles.positionStr, positionColumnID , m_columnHeadsArray, EditorStyles.popup, GUILayout.Width(250));
+            GUILayout.Space(5); GUILayout.Label("Op", GUILayout.Width(20)); propertyOps[0] = EditorGUILayout.TextField(propertyOps[0], GUILayout.Width(60));
             GUILayout.FlexibleSpace(); modelScale = EditorGUILayout.FloatField(Styles.scale, modelScale, GUILayout.Width(150));
             EditorGUILayout.EndHorizontal();
 
             EditorGUILayout.BeginHorizontal();
             normalColumnID      = EditorGUILayout.Popup(Styles.normalStr, normalColumnID    , m_columnHeadsArray, EditorStyles.popup, GUILayout.Width(250));
+            GUILayout.Space(5); GUILayout.Label("Op", GUILayout.Width(20)); propertyOps[1] = EditorGUILayout.TextField(propertyOps[1], GUILayout.Width(60));
             GUILayout.FlexibleSpace(); flipNormals = EditorGUILayout.Toggle(Styles.flipNormal, flipNormals, GUILayout.Width(150));
             EditorGUILayout.EndHorizontal();
 
+            EditorGUILayout.BeginHorizontal();
             tangentColumnID     = EditorGUILayout.Popup(Styles.tangentStr, tangentColumnID  , m_columnHeadsArray, EditorStyles.popup, GUILayout.Width(250));
+            GUILayout.Space(5); GUILayout.Label("Op", GUILayout.Width(20)); propertyOps[2] = EditorGUILayout.TextField(propertyOps[2], GUILayout.Width(60));
+            GUILayout.FlexibleSpace(); GUILayout.Label("", GUILayout.Width(150));
+            EditorGUILayout.EndHorizontal();
+
+            EditorGUILayout.BeginHorizontal();
             colorColumnID       = EditorGUILayout.Popup(Styles.colorStr, colorColumnID      , m_columnHeadsArray, EditorStyles.popup, GUILayout.Width(250));
+            GUILayout.Space(5); GUILayout.Label("Op", GUILayout.Width(20)); propertyOps[3] = EditorGUILayout.TextField(propertyOps[3], GUILayout.Width(60));
+            GUILayout.FlexibleSpace(); GUILayout.Label("", GUILayout.Width(150));
+            EditorGUILayout.EndHorizontal();
 
             
             for (int ti = 0; ti < texcoordColumnID.Length; ti++)
@@ -169,12 +166,13 @@ namespace UnityEditor.CSV2UnityMesh
                     texcoordColumnID[ti] = EditorGUILayout.Popup(Styles.texcoordStr + ti + ":", texcoordColumnID[ti], m_columnHeadsArray, EditorStyles.popup, GUILayout.Width(250));
                     GUI.enabled = tempEnable;
                 }
+                
+                GUILayout.Space(5); GUILayout.Label("Op", GUILayout.Width(20)); propertyOps[4 + ti] = EditorGUILayout.TextField(propertyOps[4 + ti], GUILayout.Width(60));
                     
                 GUILayout.FlexibleSpace(); enableTexcoord[ti] = EditorGUILayout.Toggle(Styles.enableTexcoord, enableTexcoord[ti], GUILayout.Width(150));
                 EditorGUILayout.EndHorizontal();
             }
 
-            DrawSubMeshConfigs();
 
             EditorGUIUtility.labelWidth = tempLabelWidth;
             EditorGUILayout.EndVertical();
@@ -288,7 +286,7 @@ namespace UnityEditor.CSV2UnityMesh
             GUILayout.Space(10);
             if (GUILayout.Button("Generate Mesh", GUILayout.Height(30)))
             {
-                Mesh genMesh = CreateMeshFromCSVAsset(m_columnHeadsArray, m_csvAsset, subMeshes: subMeshConfigs);
+                Mesh genMesh = CreateMeshFromCSVAsset(m_columnHeadsArray, m_csvAsset, propertyOps, false, false, flipNormals);
                 if (genMesh != null)
                 {
                     CreateMeshAssetAndShow(genMesh, m_outFilePath, m_outFileName);
@@ -304,29 +302,6 @@ namespace UnityEditor.CSV2UnityMesh
 
             GUILayout.Space(30);
             serializedObject.ApplyModifiedProperties();
-        }
-
-        private void DrawSubMeshConfigs()
-        {
-            EditorGUILayout.BeginHorizontal();
-            EditorGUI.BeginDisabledGroup(!enableSubMeshConfig);
-            EditorGUILayout.LabelField(Styles.subMeshStr + " " + rowCount, GUILayout.Width(250));
-            EditorGUI.EndDisabledGroup();
-
-            EditorGUI.BeginChangeCheck();
-            GUILayout.FlexibleSpace(); enableSubMeshConfig = EditorGUILayout.Toggle(Styles.enableSubMesh, enableSubMeshConfig, GUILayout.Width(150));
-            if (EditorGUI.EndChangeCheck())
-            {
-                if (!enableSubMeshConfig)
-                    subMeshConfigs.Clear();
-            }
-
-            EditorGUILayout.EndHorizontal();
-
-            if (enableSubMeshConfig)
-            {
-                EditorGUILayout.PropertyField(subMeshConfigsProp);
-            }
         }
 
         private GUIStyle GetButtonStyle(bool active)
@@ -353,10 +328,6 @@ namespace UnityEditor.CSV2UnityMesh
                 var dataHeads = ReadCSVColumnHeads(csvAsset);
                 columnHeadsArray = dataHeads.ToArray();
                 fileName = csvAsset.name + ".fbx";
-
-                // Read row count (except head)
-                var allLines = csvAsset.text.Split(new[] { '\n', '\r' }, StringSplitOptions.RemoveEmptyEntries);
-                rowCount = Math.Max(0, allLines.Length - 1);
             }
             else
             {
@@ -391,7 +362,7 @@ namespace UnityEditor.CSV2UnityMesh
             return heads.Select(key => key.Contains(".") ? key.Split('.')[0] : key).ToList();
         }
 
-        public static Mesh CreateMeshFromCSVAsset(string[] csvColumnHeads, TextAsset csvAsset, bool rotation90 = false, bool flipUV = false, bool flipNormals = false, List<SubMeshConfig> subMeshes = null)
+        public static Mesh CreateMeshFromCSVAsset(string[] csvColumnHeads, TextAsset csvAsset, string[] ops, bool rotation90 = false, bool flipUV = false, bool flipNormals = false)
         {
             var assetPath = AssetDatabase.GetAssetPath(csvAsset);
             if (!System.IO.File.Exists(assetPath))
@@ -457,27 +428,26 @@ namespace UnityEditor.CSV2UnityMesh
             bool hasTangentProp = (tangentColumnX >= 0 && tangentColumnY >= 0 && tangentColumnZ >= 0 && tangentColumnW >= 0);
             bool hasColorProp = (colorColumnX >= 0 && colorColumnY >= 0 && colorColumnZ >= 0 && colorColumnW >= 0);
 
-            int minIndex = int.MaxValue;
-            int maxIndex = -1;
+            // Use Dictionary to map raw IDX to compact vertex index
+            Dictionary<int, int> rawIdxToCompactIdx = new Dictionary<int, int>();
+            int nextCompactIdx = 0;
+
+            // First pass: identify all unique vertices and assign compact indices
             for (int i = 0; i < allRows.Count; ++i)
             {
-                int currIndex = (int)allRows[i][IDX];
-                if (currIndex < minIndex)
+                int rawIndex = (int)allRows[i][IDX];
+                if (!rawIdxToCompactIdx.ContainsKey(rawIndex))
                 {
-                    minIndex = currIndex;
-                }
-                else if (currIndex > maxIndex)
-                {
-                    maxIndex = currIndex;
+                    rawIdxToCompactIdx[rawIndex] = nextCompactIdx++;
                 }
             }
 
-            int vertexLength = maxIndex - minIndex + 1; // Container Self Index.
+            int vertexLength = rawIdxToCompactIdx.Count;
             int indexLen = allRows.Count;
             if (indexLen % 3 != 0)
             {
-                Debug.Log("vertex Length is zero.");
-                return null;
+                Debug.Log("vertex Length is zero or not a multiple of 3.");
+                // return null; // Optional: decide whether to abort or continue
             }
 
             Vector3[] vertices     = new Vector3[vertexLength];
@@ -494,81 +464,84 @@ namespace UnityEditor.CSV2UnityMesh
 
             int[] outputIndexBuff = new int[indexLen];
             var rotationN90 = rotation90 ? Quaternion.Euler(-90, 0, 0) : Quaternion.identity;
+            
             for (int i = 0; i < allRows.Count; ++i)
             {
                 var currLine = allRows[i];
-                var realIndex = (int)currLine[IDX] - minIndex;
-                outputIndexBuff[i] = realIndex;
-                if (realIndex < vertices.Length && realIndex >= 0)
+                int rawIndex = (int)currLine[IDX];
+                
+                // This should always succeed because we populated the dictionary in the first pass
+                if (!rawIdxToCompactIdx.TryGetValue(rawIndex, out int realIndex))
                 {
-                    var p = new Vector3(currLine[positionColumnX], currLine[positionColumnY], currLine[positionColumnZ]);
-                    vertices[realIndex] = rotationN90 * p;
-
-                    vertices[realIndex].x *= modelScale;
-                    vertices[realIndex].y *= modelScale;
-                    vertices[realIndex].z *= modelScale;
-
-                    if (hasNormalProp)
-                    {
-                        var nor = new Vector3(currLine[normalColumnX], currLine[normalColumnY], currLine[normalColumnZ]);
-                        normals[realIndex] = rotationN90 * nor;
-                    }
-
-                    if (hasTangentProp)
-                    {
-                        tangents[realIndex] = new Vector4(currLine[tangentColumnX], currLine[tangentColumnY], currLine[tangentColumnZ], currLine[tangentColumnW]);
-                    }
-
-                    if (hasColorProp)
-                    {
-                        vertexColors[realIndex] = new Color(currLine[colorColumnX], currLine[colorColumnY], currLine[colorColumnZ], currLine[colorColumnW]);
-                    }
-
-                    for (int ti = 0; ti < texcoordColumnID.Length; ti++)
-                    {
-                        if (!enableTexcoord[ti])
-                            continue;
-                        vertexTexcoords[ti][realIndex] = new Vector4(
-                            texcoordColumnX[ti] < 0 ? float.MinValue : currLine[texcoordColumnX[ti]],
-                            texcoordColumnY[ti] < 0 ? float.MinValue : currLine[texcoordColumnY[ti]],
-                            texcoordColumnZ[ti] < 0 ? float.MinValue : currLine[texcoordColumnZ[ti]],
-                            texcoordColumnW[ti] < 0 ? float.MinValue : currLine[texcoordColumnW[ti]]);
-                    }
-
+                    Debug.LogError($"Failed to find compact index for raw index {rawIndex}");
+                    continue;
                 }
-                else
+
+                outputIndexBuff[i] = realIndex;
+                
+                // Update vertex data (last writer wins, same as original logic)
+                var p = new Vector3(
+                    ApplyMathOperation(currLine[positionColumnX], ops[0]), 
+                    ApplyMathOperation(currLine[positionColumnY], ops[0]), 
+                    ApplyMathOperation(currLine[positionColumnZ], ops[0]));
+                vertices[realIndex] = rotationN90 * p;
+
+                vertices[realIndex].x *= modelScale;
+                vertices[realIndex].y *= modelScale;
+                vertices[realIndex].z *= modelScale;
+
+                if (hasNormalProp)
                 {
-                    return null;
+                    var nor = new Vector3(
+                        ApplyMathOperation(currLine[normalColumnX], ops[1]), 
+                        ApplyMathOperation(currLine[normalColumnY], ops[1]), 
+                        ApplyMathOperation(currLine[normalColumnZ], ops[1]));
+                    normals[realIndex] = rotationN90 * nor;
+                }
+
+                if (hasTangentProp)
+                {
+                    tangents[realIndex] = new Vector4(
+                        ApplyMathOperation(currLine[tangentColumnX], ops[2]), 
+                        ApplyMathOperation(currLine[tangentColumnY], ops[2]), 
+                        ApplyMathOperation(currLine[tangentColumnZ], ops[2]), 
+                        ApplyMathOperation(currLine[tangentColumnW], ops[2]));
+                }
+
+                if (hasColorProp)
+                {
+                    vertexColors[realIndex] = new Color(
+                        ApplyMathOperation(currLine[colorColumnX], ops[3]), 
+                        ApplyMathOperation(currLine[colorColumnY], ops[3]), 
+                        ApplyMathOperation(currLine[colorColumnZ], ops[3]), 
+                        ApplyMathOperation(currLine[colorColumnW], ops[3]));
+                }
+
+                for (int ti = 0; ti < texcoordColumnID.Length; ti++)
+                {
+                    if (!enableTexcoord[ti])
+                        continue;
+                    float u = texcoordColumnX[ti] < 0 ? float.MinValue : ApplyMathOperation(currLine[texcoordColumnX[ti]], ops[4 + ti]);
+                    float v = texcoordColumnY[ti] < 0 ? float.MinValue : ApplyMathOperation(currLine[texcoordColumnY[ti]], ops[4 + ti]);
+                    float uvz = texcoordColumnZ[ti] < 0 ? float.MinValue : ApplyMathOperation(currLine[texcoordColumnZ[ti]], ops[4 + ti]);
+                    float uvw = texcoordColumnW[ti] < 0 ? float.MinValue : ApplyMathOperation(currLine[texcoordColumnW[ti]], ops[4 + ti]);
+
+                    if (flipUV && v != float.MinValue)
+                    {
+                        v = 1.0f - v;
+                    }
+
+                    vertexTexcoords[ti][realIndex] = new Vector4(u, v, uvz, uvw);
                 }
             }
 
             Mesh mesh = new Mesh();
+            // Use 16 bit index buffer if vertex count is small enough, otherwise 32 bit
+            if (vertexLength > 65535)
+                mesh.indexFormat = UnityEngine.Rendering.IndexFormat.UInt32;
+                
             mesh.vertices = vertices;
-            
-            // SubMesh fill
-            if (subMeshes == null || subMeshes.Count == 0)
-            {
-                mesh.SetTriangles(outputIndexBuff, 0);
-            }
-            else
-            {
-                mesh.subMeshCount = subMeshes.Count;
-                for (int sm = 0; sm < subMeshes.Count; sm++)
-                {
-                    var startIndex = subMeshes[sm].startIndex;
-                    var count = subMeshes[sm].count;
-
-                    if (startIndex + count > outputIndexBuff.Length)
-                    {
-                        Debug.LogError($"SubMesh {sm} exceeds index buffer length!");
-                        continue;
-                    }
-
-                    int[] submeshIndices = new int[count];
-                    Array.Copy(outputIndexBuff, startIndex, submeshIndices, 0, count);
-                    mesh.SetTriangles(submeshIndices, sm);
-                }
-            }
+            mesh.SetTriangles(outputIndexBuff, 0);
 
             for (int ti = 0; ti < texcoordColumnID.Length; ti++)
             {
@@ -624,15 +597,22 @@ namespace UnityEditor.CSV2UnityMesh
             var meshRenderer = obj.AddComponent<MeshRenderer>();
             //meshRenderer.sharedMaterial = material; // Use default Lit
 
-            obj.name = fileName.Split('.')[0] + "Mesh";
+             obj.name = fileName.Split('.')[0] + "Mesh";
             ExportModelOptions exportModelOptions = new ExportModelOptions();
-            exportModelOptions.ExportFormat = fbxExportFormat;
+            exportModelOptions.ExportFormat = (Formats.Fbx.Exporter.ExportFormat)fbxExportFormat;
             ModelExporter.ExportObject(exportPath, obj, exportModelOptions);
             SaveMeshToAsset(mesh, filePath + fileName + "_fullData.mesh");
 
+
+            //var exportOptions = new ExportModelSettingsSerialize();  
+            //exportOptions.SetExportFormat(ExportSettings.ExportFormat.Binary);  
+            //exportOptions.SetAnimatedSkinnedMesh(false);  
+            //exportOptions.SetUseMayaCompatibleNames(true);  
+            //exportOptions.SetExportUnredererd(false);  
+            //ModelExporter.ExportSingleModelBySetting( exportPath , obj, exportOptions);
             // Clean
             GameObject.DestroyImmediate(obj);
-
+            AssetDatabase.Refresh();
             // Ping Object
             EditorGUIUtility.PingObject(AssetDatabase.LoadAssetAtPath(exportPath, typeof(UnityEngine.Object)));
         }
@@ -655,9 +635,10 @@ namespace UnityEditor.CSV2UnityMesh
                 float[] cellData = new float[cells.Length];
                 for (int i = 0; i < cells.Length; ++i)
                 {
-                    if (!float.TryParse(cells[i], out cellData[i]))
+                    // Use InvariantCulture to ensure '.' is treated as decimal separator
+                    if (!float.TryParse(cells[i], System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out cellData[i]))
                     {
-                        Debug.Log("Don't have csv data.");
+                        Debug.LogWarning($"Failed to parse float at column {i}: '{cells[i]}'. Row: {lineText}");
                     }
                 }
 
@@ -697,7 +678,6 @@ namespace UnityEditor.CSV2UnityMesh
             public static readonly GUIContent flipNormal = EditorGUIUtility.TrTextContent("flipNormal");
             public static readonly GUIContent flipUV = EditorGUIUtility.TrTextContent("flipUV");
             public static readonly GUIContent enableTexcoord = EditorGUIUtility.TrTextContent("Enable");
-            public static readonly GUIContent enableSubMesh = EditorGUIUtility.TrTextContent("Enable");
 
 
             public static readonly GUIContent meshProperties = EditorGUIUtility.TrTextContent("Mesh Properties");
@@ -709,7 +689,6 @@ namespace UnityEditor.CSV2UnityMesh
             public static string tangentStr = "Tangent:";
             public static string colorStr = "Color:";
             public static string texcoordStr = "Texcoord";
-            public static string subMeshStr = "SubMesh:";
 
             public static string fbxFormatStr = "FBX format:";
             public static string materialDebugMode = "MaterialDebugMode:";
@@ -724,12 +703,12 @@ namespace UnityEditor.CSV2UnityMesh
                 switch (e.type)
                 {
                     case EventType.MouseDown:
-                        if (e.button == 0) // 左键拖动旋转
+                        if (e.button == 0) // ����϶���ת
                         {
                             dragStartPos = e.mousePosition;
                             e.Use();
                         }
-                        else if (e.button == 2) // 中键拖动物体位置
+                        else if (e.button == 2) // �м��϶�����λ��
                         {
                             dragStartPos = e.mousePosition;
                             e.Use();
@@ -737,14 +716,14 @@ namespace UnityEditor.CSV2UnityMesh
                         break;
 
                     case EventType.MouseDrag:
-                        if (e.button == 0) // 左键拖动旋转
+                        if (e.button == 0) // ����϶���ת
                         {
                             Vector2 delta = e.mousePosition - dragStartPos;
-                            previewDir += delta * 0.5f; // 调整旋转速度
+                            previewDir += delta * 0.5f; // ������ת�ٶ�
                             dragStartPos = e.mousePosition;
                             e.Use();
                         }
-                        else if (e.button == 2) // 中键拖动物体位置
+                        else if (e.button == 2) // �м��϶�����λ��
                         {
                             Vector2 delta = e.mousePosition - dragStartPos;
                             objectPosition += new Vector3(delta.x * 0.01f, -delta.y * 0.01f, 0);
@@ -753,7 +732,7 @@ namespace UnityEditor.CSV2UnityMesh
                         }
                         break;
 
-                    case EventType.ScrollWheel: // 滚轮缩放
+                    case EventType.ScrollWheel: // ��������
                         zoom += e.delta.y * 0.1f;
                         zoom = Mathf.Clamp(zoom, 1f, 10f);
                         e.Use();
@@ -853,6 +832,28 @@ namespace UnityEditor.CSV2UnityMesh
             AssetDatabase.CreateAsset(mesh, filePath);
             AssetDatabase.SaveAssets();
             AssetDatabase.Refresh();
+        }
+
+        private static float ApplyMathOperation(float val, string op)
+        {
+            if (string.IsNullOrEmpty(op)) return val;
+            op = op.Trim();
+            if (op.Length < 2) return val;
+
+            char operatorChar = op[0];
+            string operandStr = op.Substring(1);
+
+            if (float.TryParse(operandStr, System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out float operand))
+            {
+                switch (operatorChar)
+                {
+                    case '*': return val * operand;
+                    case '/': return operand != 0 ? val / operand : val;
+                    case '+': return val + operand;
+                    case '-': return val - operand;
+                }
+            }
+            return val;
         }
     }
 }
